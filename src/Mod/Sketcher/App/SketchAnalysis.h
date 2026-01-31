@@ -188,6 +188,14 @@ public:
     // third type of routines
     std::vector<Base::Vector3d> getOpenVertices() const;
 
+    struct SketchAnalysisResult
+    {
+        std::set<int> internalDegenerate;
+        std::set<int> externalBroken;
+    };
+
+    SketchAnalysisResult getDiagnosticReport(double tolerance) const;
+
 private:
     Sketcher::SketchObject* sketch;
 
