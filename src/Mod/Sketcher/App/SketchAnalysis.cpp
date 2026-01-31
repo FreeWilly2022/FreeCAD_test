@@ -40,6 +40,12 @@
 #include "GeometryFacade.h"
 #include "SketchAnalysis.h"
 #include "SketchObject.h"
+#include <App/PropertyLinks.h>
+
+#include "Base/Vector3D.h"
+#include "ExternalGeometryFacade.h"
+#include <Mod/Part/App/Geometry.h>
+#include <Mod/Sketcher/App/ExternalGeometryExtension.h>
 
 
 using namespace Sketcher;
@@ -288,16 +294,40 @@ struct PointConstraints
 
                 // Decompose the group of adjacent vertices into groups of coincident vertices
                 // Going through existent coincidences
+                // Search only constraints associated with geometry
+
                 for (auto& coincidence : allcoincid) {
                     VertexIds v1;
                     VertexIds v2;
-                    v1.GeoId = coincidence->First;
-                    v1.PosId = coincidence->FirstPos;
-                    v2.GeoId = coincidence->Second;
-                    v2.PosId = coincidence->SecondPos;
+                    bool v1_found = false, v2_found = false;
 
-                    // Look if coincident vertices are in the group of adjacent ones we are
-                    // processing
+                    // Find the actual vertex data (including coordinates) for this constraint
+                    for (const auto& vid : vertexIds) {
+                        if (vid.GeoId == coincidence->First && vid.PosId == coincidence->FirstPos) {
+                            v1 = vid;
+                            v1_found = true;
+                        }
+                        if (vid.GeoId == coincidence->Second && vid.PosId == coincidence->SecondPos) {
+                            v2 = vid;
+                            v2_found = true;
+                        }
+                        if (v1_found && v2_found) {
+                            break;
+                        }
+                    }
+
+                    if (!v1_found || !v2_found) {
+                        continue;
+                    }
+
+                    // If the constraint says they are connected, but they aren't
+                    // close, they should NOT be pulled into the same coincident group.
+                    double dist = (v1.v - v2.v).Length();
+
+                    if (dist > Precision::Confusion()) {
+                        continue;
+                    }
+
                     auto nv1 = vertexGrp.extract(v1);
                     auto nv2 = vertexGrp.extract(v2);
 
@@ -355,7 +385,7 @@ struct PointConstraints
                 }
 
                 // If there is more than 1 coincident group into adjacent group, constraint(s)
-                // is(are) missing Virtually generate the missing constraint(s)
+                // is(are) missing. Virtually generate the missing constraint(s)
                 if (coincVertexGrps.size() > 1) {
                     std::vector<std::set<VertexIds, VertexID_Less>>::iterator vn;
                     // Starting from the 2nd coincident group, generate a constraint between
@@ -375,7 +405,6 @@ struct PointConstraints
                 vt = vn;
             }
         }
-
         return missingCoincidences;
     }
 
@@ -509,6 +538,7 @@ int SketchAnalysis::detectMissingPointOnPointConstraints(double precision, bool 
     // Build the list of sketch vertices
     const std::vector<Part::Geometry*>& geom = sketch->getInternalGeometry();
     for (std::size_t i = 0; i < geom.size(); i++) {
+
         auto gf = GeometryFacade::getFacade(geom[i]);
 
         if (gf->getConstruction() && !includeconstruction) {
@@ -516,21 +546,64 @@ int SketchAnalysis::detectMissingPointOnPointConstraints(double precision, bool 
         }
 
         pointConstr.addGeometry(gf->getGeometry(), int(i));
-        // TODO take into account single vertices ?
     }
 
     // Build a list of all coincidences in the sketch
 
-    std::vector<Sketcher::Constraint*> coincidences = sketch->Constraints.getValues();
-    for (auto& constraint : sketch->Constraints.getValues()) {
-        // clang-format off
-        if (constraint->Type == Sketcher::Coincident ||
-            constraint->Type == Sketcher::Tangent ||
-            constraint->Type == Sketcher::Perpendicular) {
+    std::vector<Sketcher::Constraint*> coincidences;
+    coincidences.reserve(sketch->Constraints.getValues().size());
+
+    for (auto* constraint : sketch->Constraints.getValues()) {
+        if (constraint->Type == Sketcher::Coincident) {
             coincidences.push_back(constraint);
         }
-        // clang-format on
-        // TODO optimizing by removing constraints not applying on vertices ?
+
+        // A Tangent constraint can act as a Coincident constraint depending on what geometry was
+        // selected
+        else if (constraint->Type == Sketcher::Tangent) {
+            // PointPos::start (1) and PointPos::end (2) are the endpoints
+            bool firstIsPoint
+                = (constraint->FirstPos == Sketcher::PointPos::start
+                   || constraint->FirstPos == Sketcher::PointPos::end);
+            bool secondIsPoint
+                = (constraint->SecondPos == Sketcher::PointPos::start
+                   || constraint->SecondPos == Sketcher::PointPos::end);
+
+            if (firstIsPoint && secondIsPoint) {
+                coincidences.push_back(constraint);
+            }
+        }
+        // A Perpendicular constraint can act as a Coincident constraint depending on what geometry
+        // was selected
+        else if (constraint->Type == Sketcher::Perpendicular) {
+            // Check if it's linking specific points or just lines
+            if (constraint->FirstPos != Sketcher::PointPos::none
+                && constraint->SecondPos != Sketcher::PointPos::none) {
+                coincidences.push_back(constraint);
+            }
+        }
+        // A Symmetric constraint can act as a Coincident constraint depending on what geometry was
+        // selected
+        else if (constraint->Type == Sketcher::Symmetric) {
+            // Case 1: Two points symmetric about a reference point/line
+            // In FreeCAD, a Symmetric constraint involves 3 elements:
+            // First, Second (the symmetric points) and Third (the reference)
+
+            bool isPointToPoint
+                = (constraint->FirstPos != Sketcher::PointPos::none
+                   && constraint->SecondPos != Sketcher::PointPos::none);
+
+            if (constraint->First == constraint->Second) {
+                // This is a mathematical "collapse" where a point is symmetric to itself.
+                // It implies the point must lie exactly on the reference (Third).
+                coincidences.push_back(constraint);
+            }
+
+            // Case 2: Checking if the constraint targets specific vertices (endpoints)
+            else if (isPointToPoint) {
+                coincidences.push_back(constraint);
+            }
+        }
     }
 
     // Holds the list of missing coincidences
@@ -1001,39 +1074,239 @@ std::vector<Base::Vector3d> SketchAnalysis::getOpenVertices() const
     return points;
 }
 
-std::set<int> SketchAnalysis::getDegeneratedGeometries(double tolerance) const
+SketchAnalysis::SketchAnalysisResult SketchAnalysis::getDiagnosticReport(double tolerance) const
 {
-    std::set<int> delInternalGeometries;
-    const std::vector<Part::Geometry*>& geom = sketch->getInternalGeometry();
-    for (std::size_t i = 0; i < geom.size(); i++) {
-        auto gf = GeometryFacade::getFacade(geom[i]);
+    SketchAnalysisResult report;
 
-        if (gf->getConstruction()) {
+    // 1. Force a refresh of the Sketch state (Public alternative to recompute)
+    auto* mutableSketch = const_cast<Sketcher::SketchObject*>(sketch);
+    mutableSketch->execute();
+
+    // 2. Identify Internal Degenerate Geometry
+    const std::vector<Part::Geometry*>& internalGeom = sketch->getInternalGeometry();
+    for (size_t i = 0; i < internalGeom.size(); ++i) {
+        if (!internalGeom[i]) {
+            report.internalDegenerate.insert(static_cast<int>(i));
             continue;
         }
 
-        if (auto curve = dynamic_cast<Part::GeomCurve*>(gf->getGeometry())) {
-            double len = curve->length(curve->getFirstParameter(), curve->getLastParameter());
-            if (len < tolerance) {
-                delInternalGeometries.insert(static_cast<int>(i));
+        // Use Facade to check if it's a real (non-construction) line
+        std::unique_ptr<Sketcher::GeometryFacade> gf(
+            Sketcher::GeometryFacade::getFacade(internalGeom[i])
+        );
+        if (gf && !gf->getConstruction()) {
+            if (auto curve = dynamic_cast<const Part::GeomCurve*>(internalGeom[i])) {
+                try {
+                    // Check length against tolerance
+                    if (curve->length(curve->getFirstParameter(), curve->getLastParameter())
+                        < tolerance) {
+                        report.internalDegenerate.insert(static_cast<int>(i));
+                    }
+                }
+                catch (...) {
+                    report.internalDegenerate.insert(static_cast<int>(i));
+                }
             }
         }
     }
 
-    return delInternalGeometries;
+    // 3. External Geometry Analysis (Fixed Type Mismatch) ---
+    // Use ExternalGeometry (PropertyLinkSubList) for the raw link objects
+    const std::vector<App::DocumentObject*>& linkedObjs = sketch->ExternalGeometry.getValues();
+    const std::vector<Part::Geometry*>& resolvedGeom = sketch->getExternalGeometry();
+
+    for (int j = 0; j < static_cast<int>(linkedObjs.size()); j++) {
+        bool isBroken = false;
+
+        // CASE 1: The target object itself is null (it was deleted)
+        if (linkedObjs[j] == nullptr) {
+            isBroken = true;
+        }
+        // CASE 2: The sub-element (e.g., #c:3) is missing from the object
+        // If the index exists in the property but not in the resolver, it's a "zombie" link.
+        else if (j >= static_cast<int>(resolvedGeom.size()) || resolvedGeom[j] == nullptr) {
+            isBroken = true;
+        }
+
+        if (isBroken) {
+            // This index j matches the "Missing_External_Geo" error in your console
+            report.externalBroken.insert(j);
+
+            // Log the specific object name for confirmation
+            std::string objName = linkedObjs[j] ? linkedObjs[j]->getNameInDocument()
+                                                : "Deleted Object";
+            Base::Console().warning(("Diagnostic: Captured broken link at index "
+                                     + std::to_string(j) + " to " + objName + "\n")
+                                        .c_str());
+        }
+    }
+
+    // 2. Access the internal geometry list (ExternalGeo contains the Part::Geometry objects)
+    const std::vector<Part::Geometry*>& geoms = sketch->ExternalGeo.getValues();
+
+    for (size_t i = 0; i < geoms.size(); ++i) {
+        if (!geoms[i]) {
+            continue;
+        }
+
+        // Use the Facade logic from SketchObject.cpp
+        auto egf = Sketcher::ExternalGeometryFacade::getFacade(geoms[i]);
+        if (!egf) {
+            continue;
+        }
+
+        // Check the 'Missing' flag set during SketchObject::execute()
+        // This flag is what triggers the "missing reference: Pad" console error
+        if (egf->testFlag(Sketcher::ExternalGeometryExtension::Missing)) {
+            report.externalBroken.insert(static_cast<int>(i));
+
+            // Console confirmation matching the error trace you provided
+            Base::Console().warning(("Diagnostic caught: " + egf->getRef() + " is missing\n").c_str());
+        }
+        else {
+            // Check for geometric degeneracy if the reference is NOT missing
+            if (auto curve = dynamic_cast<const Part::GeomCurve*>(geoms[i])) {
+                try {
+                    if (curve->length(curve->getFirstParameter(), curve->getLastParameter())
+                        < tolerance) {
+                        report.externalBroken.insert(static_cast<int>(i));
+                    }
+                }
+                catch (...) {
+                    report.externalBroken.insert(static_cast<int>(i));
+                }
+            }
+        }
+    }
+
+    return report;
 }
+
 
 int SketchAnalysis::detectDegeneratedGeometries(double tolerance) const
 {
-    std::set<int> delInternalGeometries = getDegeneratedGeometries(tolerance);
-    return static_cast<int>(delInternalGeometries.size());
+    // 1. Get the comprehensive report which includes the 'Missing_External_Geo' check
+    SketchAnalysis::SketchAnalysisResult report = getDiagnosticReport(tolerance);
+
+    // 2. The total count now includes broken purple references AND tiny internal lines
+    int internalCount = static_cast<int>(report.internalDegenerate.size());
+    int externalBrokenCount = static_cast<int>(report.externalBroken.size());
+
+    return internalCount + externalBrokenCount;
+}
+
+void SketchAnalysis::rescueBrokenLinks(const SketchAnalysisResult& report, double tolerance)
+{
+    const std::vector<Part::Geometry*>& externalGeom = sketch->getExternalGeometry();
+
+    for (int extIdx : report.externalBroken) {
+        if (extIdx < static_cast<int>(externalGeom.size()) && externalGeom[extIdx] != nullptr) {
+
+            std::unique_ptr<GeometryFacade> gf(GeometryFacade::getFacade(externalGeom[extIdx]));
+            bool shouldRescue = (gf && gf->getGeometry());
+
+            if (shouldRescue) {
+                if (auto curve = dynamic_cast<const Part::GeomCurve*>(gf->getGeometry())) {
+                    try {
+                        if (curve->length(curve->getFirstParameter(), curve->getLastParameter())
+                            < tolerance) {
+                            shouldRescue = false;
+                        }
+                    }
+                    catch (...) {
+                        shouldRescue = false;
+                    }
+                }
+            }
+
+            if (shouldRescue) {
+                Part::Geometry* copy = externalGeom[extIdx]->copy();
+                copy->deleteExtension(Sketcher::ExternalGeometryExtension::getClassTypeId());
+                sketch->addGeometry(copy, true);  // true = construction mode
+
+                Base::Console().warning(
+                    "Diagnostic: Converted broken link to internal construction.\n"
+                );
+            }
+        }
+    }
+}
+
+void SketchAnalysis::severBrokenLinks(const SketchAnalysisResult& report)
+{
+    auto* mutableSketch = const_cast<Sketcher::SketchObject*>(sketch);
+    const std::vector<Sketcher::Constraint*>& constrs = mutableSketch->Constraints.getValues();
+    std::vector<int> constraintIndicesToDelete;
+
+    // A. Identify constraints referencing broken external geometry
+    for (int i = 0; i < static_cast<int>(constrs.size()); ++i) {
+        Sketcher::Constraint* c = constrs[i];
+        if (!c) {
+            continue;
+        }
+
+        auto isRefBroken = [&](int geoIdx) {
+            if (geoIdx < 0) {
+                int extIdx = std::abs(geoIdx) - 1;
+                return report.externalBroken.count(extIdx) > 0;
+            }
+            return false;
+        };
+
+        if (isRefBroken(c->First) || isRefBroken(c->Second) || isRefBroken(c->Third)) {
+            constraintIndicesToDelete.push_back(i);
+        }
+    }
+
+    // B. Delete constraints in REVERSE order
+    for (auto it = constraintIndicesToDelete.rbegin(); it != constraintIndicesToDelete.rend(); ++it) {
+        mutableSketch->delConstraint(*it);
+    }
+
+    // C. Delete the external geometry entries in REVERSE order
+    for (auto it = report.externalBroken.rbegin(); it != report.externalBroken.rend(); ++it) {
+        mutableSketch->delExternal(*it);
+    }
 }
 
 int SketchAnalysis::removeDegeneratedGeometries(double tolerance)
 {
-    std::set<int> delInternalGeometries = getDegeneratedGeometries(tolerance);
-    for (auto it = delInternalGeometries.rbegin(); it != delInternalGeometries.rend(); ++it) {
-        sketch->delGeometry(*it);
+    int removedCount = 0;
+    SketchAnalysisResult report = getDiagnosticReport(tolerance);
+
+    if (report.internalDegenerate.empty() && report.externalBroken.empty()) {
+        return 0;
     }
-    return static_cast<int>(delInternalGeometries.size());
+
+    App::Document* doc = sketch->getDocument();
+    if (!doc) {
+        return 0;
+    }
+
+    doc->openTransaction("Convert and Clean Broken External Links");
+
+    // Phase 1: Rescue
+    rescueBrokenLinks(report, tolerance);
+
+    // Phase 2: Sever
+    severBrokenLinks(report);
+
+    // Phase 3: Cleanup internal degenerates
+    std::vector<int> sortedInternal(report.internalDegenerate.begin(), report.internalDegenerate.end());
+    for (auto it = sortedInternal.rbegin(); it != sortedInternal.rend(); ++it) {
+        sketch->delGeometry(*it);
+        removedCount++;
+    }
+
+    // Finalize
+    auto* mutableSketch = const_cast<Sketcher::SketchObject*>(sketch);
+    mutableSketch->ExternalGeo.setSize(mutableSketch->getExternalGeometryCount());
+
+    doc->commitTransaction();
+    mutableSketch->execute();
+    sketch->solve();
+    sketch->touch();
+    doc->recompute();
+
+    return removedCount;
 }

@@ -196,6 +196,17 @@ private:
     std::vector<ConstraintIds> lineequalityConstraints;
     std::vector<ConstraintIds> radiusequalityConstraints;
 
+    // functions to process degenerate geometry
+    struct SketchAnalysisResult
+    {
+        std::set<int> internalDegenerate;
+        std::set<int> externalBroken;
+    };
+
+    SketchAnalysisResult getDiagnosticReport(double tolerance) const;
+    void rescueBrokenLinks(const SketchAnalysisResult& report, double tolerance);
+    void severBrokenLinks(const SketchAnalysisResult& report);
+
 private:
     void autoDeleteAllConstraints();
     void autoHorizontalVerticalConstraints();

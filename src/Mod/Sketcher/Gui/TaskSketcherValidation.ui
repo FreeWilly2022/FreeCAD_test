@@ -57,14 +57,14 @@
       <item row="0" column="0">
        <widget class="QLabel" name="label">
         <property name="text">
-         <string>Tolerance</string>
+         <string>X/Y Gap to detect</string>
         </property>
        </widget>
       </item>
       <item row="0" column="1">
        <widget class="QComboBox" name="comboBoxTolerance">
         <property name="toolTip">
-         <string>Defines the X/Y tolerance within which missing coincidences are detected</string>
+         <string>Defines the X/Y gap within which missing coincidences are detected</string>
         </property>
        </widget>
       </item>
@@ -111,7 +111,7 @@ This is done by analyzing the sketch geometries and constraints.</string>
       <item row="0" column="0">
        <widget class="QPushButton" name="findConstraint">
         <property name="toolTip">
-         <string>Finds invalid/malformed constrains in the sketch</string>
+         <string>Finds invalid/malformed constraints in the sketch</string>
         </property>
         <property name="text">
          <string>Find</string>
@@ -160,7 +160,7 @@ This is done by analyzing the sketch geometries and constraints.</string>
       <item row="0" column="1">
        <widget class="QPushButton" name="fixDegenerated">
         <property name="toolTip">
-         <string>Tries to fix found degenerated geometries</string>
+         <string>Tries to fix degenerated geometries and convert broken external geometry to construction geometry</string>
         </property>
         <property name="text">
          <string>Fix</string>
