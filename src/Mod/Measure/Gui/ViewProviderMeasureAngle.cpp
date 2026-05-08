@@ -421,7 +421,7 @@ ViewProviderMeasureAngle::ViewProviderMeasureAngle()
 
     // ========================== Normals ==========================
 
-    // arc normals standerd
+    // arc normals standard
     auto pNormalsSwitch = new SoSwitch();
     pNormalsSwitch->whichChild.connectFrom(&visualMode);
 
@@ -668,8 +668,9 @@ void ViewProviderMeasureAngle::positionAnno(const Measure::MeasureBase* measureO
 
 void ViewProviderMeasureAngle::onLabelMoved()
 {
-    if (!Gui::Control().activeDialog()
-        || !dynamic_cast<MeasureGui::TaskMeasure*>(Gui::Control().activeDialog())) {
+    auto* activeDialog = Gui::Control().activeDialog();
+    const bool isTaskMeasure = activeDialog && dynamic_cast<MeasureGui::TaskMeasure*>(activeDialog);
+    if (!isTaskMeasure) {
         return;
     }
     SbVec3f trans = pLabelTranslation->translation.getValue();
@@ -702,10 +703,7 @@ void ViewProviderMeasureAngle::onLabelMoved()
 
 void ViewProviderMeasureAngle::onLabelMoveFinish()
 {
-    if (!Gui::Control().activeDialog()
-        || !dynamic_cast<MeasureGui::TaskMeasure*>(Gui::Control().activeDialog())) {
-        return;
-    }
+    ViewProviderMeasureBase::onLabelMoveFinish();
     IsFlipped.setValue(isArcFlipped.getValue());
 }
 
