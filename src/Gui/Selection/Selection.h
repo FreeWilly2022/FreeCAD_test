@@ -401,6 +401,14 @@ public:
         ResolveMode resolve = ResolveMode::OldStyleElement
     ) const;
 
+    /// Check if an object or sub-element passes the active selection gate without changing selection.
+    bool testSelection(
+        App::Document* pDoc,
+        App::DocumentObject* pObject,
+        const char* pSubName = nullptr
+    ) const;
+    bool hasSelectionGate(App::Document* pDoc) const;
+
     std::string getSelectedElement(App::DocumentObject*, const char* pSubName) const;
 
     /// set the preselected object (mostly by the 3D view)
@@ -874,7 +882,7 @@ protected:
         std::string reason;
     };
 
-    /** @brief Checks if a selection is allowed through the selecetion filter.
+    /** @brief Checks if a selection is allowed through the selection filter.
      * Uses SelectionGate (which has a SelectionFilter).
      * @param context The selection context.
      * @param sel The object to be selected.
